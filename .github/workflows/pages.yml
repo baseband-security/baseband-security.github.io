@@ -1,0 +1,67 @@
+name: Deploy static site to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out website
+        uses: actions/checkout@v6
+      - name: Check out analysis pipeline
+        uses: actions/checkout@v6
+        with:
+          repository: baseband-security/cve_analysis
+          path: _pipeline
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Restore Nix store cache
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('_pipeline/flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 2G
+      - name: Fetch and classify the CVE snapshot
+        env:
+          BASEBAND_CVE_FETCH_DIR: ${{ runner.temp }}/baseband-cve-fetch
+          BASEBAND_CVE_OUTPUT_DIR: ${{ runner.temp }}/baseband-cve-output
+        run: nix run ./_pipeline#pipeline -- --output "$BASEBAND_CVE_OUTPUT_DIR" --no-plots
+      - name: Assemble static site
+        env:
+          BASEBAND_CVE_OUTPUT_DIR: ${{ runner.temp }}/baseband-cve-output
+        run: |
+          install -d _site/data
+          install -m 0644 index.html styles.css app.js _site/
+          install -m 0644 .nojekyll _site/
+          install -m 0644 \
+            "$BASEBAND_CVE_OUTPUT_DIR/baseband_memory_cves.json" \
+            "$BASEBAND_CVE_OUTPUT_DIR/excluded_non_memory_cves.json" \
+            "$BASEBAND_CVE_OUTPUT_DIR/classification_summary.json" \
+            "$BASEBAND_CVE_OUTPUT_DIR/dataset_manifest.json" \
+            _site/data/
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Upload static site
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
